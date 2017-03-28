@@ -1,0 +1,102 @@
+---
+title: "Asset Mapping Sensor Data Analysis"
+url: "https://www.assetmapping.com"
+author: "Nathan Sowatskey - https://github.com/NathanDotTo, https://www.kaggle.com/nathanto"
+output: html_document
+---
+
+```{r load_libraries, echo = FALSE, warning = FALSE, message = FALSE}
+require("plotly")
+```
+
+
+
+# Introduction
+
+This is a study of time series data provided by [Asset Mapping](https://www.assetmapping.com).
+
+# Data
+
+The data source is an SQL output file, named `sensors.sql` in the data directory. The format of the data is illustrated by this example:
+
+```
+      object_name       | object_name |         time_stamp         | value 
+------------------------+-------------+----------------------------+-------
+ London 70bf78cf (None) | NoiseAvg    | 2017-02-02 15:16:04        |  50.9
+ London 9c850e0a (None) | NoisePeak   | 2017-03-22 03:46:53        |  36.4
+```
+
+The data starts at line 3. Observation fields are delimted by a `|`. The first column is `IC_meter`. The second column is `value_type`, which we analyse below. The `time_stamp` and `value` columns are what they are.
+
+TODO: Query data from source with SQL.
+
+## Importing Data
+
+```{r import_sensor_data}
+#Set column names explicitly as the column headings in the source are not what we need
+column_names <- c("IC_meter", "value_type", "time_stamp", "value")
+#Import data, skipping header rows and without factors for now, so that the data types can be more easily converted
+sensor_df <- read.delim("data/sensors.sql", sep="|", skip = 2, col.names = column_names, header = FALSE, stringsAsFactors = FALSE, strip.white = TRUE) 
+#Delete last row if the values are null.
+nrow_sensor_df <- nrow(sensor_df)
+if (sensor_df[nrow_sensor_df, 2] == "") {
+  sensor_df <- sensor_df[-nrow_sensor_df,]
+}
+```
+
+```{r convert_time_stamp}
+#Convert string to POSIXct, note that the milliseconds are retained with the %OS format. To see milliseconds when printing, use:
+#op <- options(digits.secs=6) 
+sensor_df$time_stamp <- as.POSIXct(sensor_df$time_stamp, tz = "UTC", format = "%Y-%m-%d %H:%M:%OS", usetz = TRUE)
+```
+
+## Subset Data
+
+```{r subset_data}
+ic_meters <- unique(sensor_df$IC_meter)
+value_types <- unique(sensor_df$value_type)
+#The matrix will hold a dataframe subset for each IC_meter and value_type, with the name of each row being the IC_meter, and the column the value_type
+meter_value_type_subsets_mtrx <- matrix(list(), nrow = length(ic_meters), ncol = length(value_types))
+rownames(meter_value_type_subsets_mtrx) <- ic_meters
+colnames(meter_value_type_subsets_mtrx) <- value_types
+col_counter <- 1
+row_counter <- 1
+for (icm in ic_meters) {
+  for (vt in value_types) {
+    meter_value_type_subsets_mtrx[[row_counter, col_counter]] <- subset(sensor_df, (IC_meter == icm & value_type == vt), select = -c(IC_meter, value_type))
+    col_counter <- col_counter + 1
+  }
+  col_counter <- 1
+  row_counter <- row_counter + 1
+}
+```
+
+# Data Exploration
+
+```{r plotly_lines, warning = FALSE}
+#This syntax for using plotly in a loop comes from here:
+#https://github.com/ropensci/plotly/issues/273
+line_plot_gatherer <- htmltools::tagList()
+col_counter <- 1
+row_counter <- 1
+plot_counter <- 1
+for (icm in ic_meters) {
+  for (vt in value_types) {
+    plot_df <- meter_value_type_subsets_mtrx[[row_counter, col_counter]]
+    if (nrow(plot_df) > 0) {
+      line_plot_gatherer[[plot_counter]] <- plot_ly(plot_df, x = ~time_stamp, y = ~value, type = "scatter", mode = "lines") %>% 
+        layout(title = paste("Meter -", icm, "- Value Type -", vt))
+      #Put some space between the plots
+      line_plot_gatherer[[plot_counter+1]] <- htmltools::h1(' ') 
+      col_counter <- col_counter + 1
+      plot_counter <- plot_counter + 2
+    }
+  }
+  col_counter <- 1
+  row_counter <- row_counter + 1
+}
+line_plot_gatherer
+```
+
+
+```
