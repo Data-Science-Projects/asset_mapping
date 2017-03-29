@@ -17,7 +17,7 @@ This is a study of time series data provided by [Asset Mapping](https://www.asse
 
 # Data
 
-The data source is an SQL output file, named `sensors.sql` in the data directory. The format of the data is illustrated by this example:
+The data source is a compressed SQL output file in the data directory. The format of the data is illustrated by this example:
 
 ```
       object_name       | object_name |         time_stamp         | value 
@@ -34,7 +34,7 @@ TODO: Query data from source with SQL.
 
 ```{r import_sensor_data}
 #Import all source files in the data directory and store them in a matrix, where the row name is the file name
-data_files <- list.files(path = "data", pattern = "\\.sql$")
+data_files <- list.files(path = "data", pattern = "\\.sql\\.gz$")
 #The columns are the source data set, and the unique lists of meters and value_types in that data set
 sensors_df_mtrx <- matrix(list(), nrow = length(data_files), ncol = 3)
 rownames(sensors_df_mtrx) <- data_files
