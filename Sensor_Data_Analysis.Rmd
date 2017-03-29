@@ -33,70 +33,118 @@ TODO: Query data from source with SQL.
 ## Importing Data
 
 ```{r import_sensor_data}
+#Import all source files in the data directory and store them in a matrix, where the row name is the file name
+data_files <- list.files(path = "data", pattern = "\\.sql$")
+#The columns are the source data set, and the unique lists of meters and value_types in that data set
+sensors_df_mtrx <- matrix(list(), nrow = length(data_files), ncol = 3)
+rownames(sensors_df_mtrx) <- data_files
 #Set column names explicitly as the column headings in the source are not what we need
 column_names <- c("IC_meter", "value_type", "time_stamp", "value")
-#Import data, skipping header rows and without factors for now, so that the data types can be more easily converted
-sensor_df <- read.delim("data/sensors.sql", sep="|", skip = 2, col.names = column_names, header = FALSE, stringsAsFactors = FALSE, strip.white = TRUE) 
-#Delete last row if the values are null.
-nrow_sensor_df <- nrow(sensor_df)
-if (sensor_df[nrow_sensor_df, 2] == "") {
-  sensor_df <- sensor_df[-nrow_sensor_df,]
+row <- 1
+for (file in data_files) {
+  #Import data, skipping header rows and without factors for now, so that the data types can be more easily converted
+  sensors_df_mtrx[[row, 1]] <- read.delim(paste("data/", file, sep = ""), sep="|", skip = 2, col.names = column_names, header = FALSE, stringsAsFactors = FALSE, strip.white = TRUE) 
+  #Delete last row if the values are null.
+  nrow_sensor_df <- nrow(sensors_df_mtrx[[row, 1]])
+  if (sensors_df_mtrx[[row, 1]][nrow_sensor_df, 2] == "") {
+    sensors_df_mtrx[[row, 1]] <- sensors_df_mtrx[[row, 1]][-nrow_sensor_df,]
+  }
+  #Convert time_stamp string to POSIXct, note that the milliseconds are retained with the %OS format. To see milliseconds when printing, use:
+  #op <- options(digits.secs=6) 
+  sensors_df_mtrx[[row, 1]]$time_stamp <- as.POSIXct(sensors_df_mtrx[[row, 1]]$time_stamp, tz = "UTC", format = "%Y-%m-%d %H:%M:%OS", usetz = TRUE)
+  row <- row + 1
 }
 ```
-
-```{r convert_time_stamp}
-#Convert string to POSIXct, note that the milliseconds are retained with the %OS format. To see milliseconds when printing, use:
-#op <- options(digits.secs=6) 
-sensor_df$time_stamp <- as.POSIXct(sensor_df$time_stamp, tz = "UTC", format = "%Y-%m-%d %H:%M:%OS", usetz = TRUE)
-```
-
 ## Subset Data
 
 ```{r subset_data}
-ic_meters <- unique(sensor_df$IC_meter)
-value_types <- unique(sensor_df$value_type)
-#The matrix will hold a dataframe subset for each IC_meter and value_type, with the name of each row being the IC_meter, and the column the value_type
-meter_value_type_subsets_mtrx <- matrix(list(), nrow = length(ic_meters), ncol = length(value_types))
-rownames(meter_value_type_subsets_mtrx) <- ic_meters
-colnames(meter_value_type_subsets_mtrx) <- value_types
-col_counter <- 1
-row_counter <- 1
-for (icm in ic_meters) {
-  for (vt in value_types) {
-    meter_value_type_subsets_mtrx[[row_counter, col_counter]] <- subset(sensor_df, (IC_meter == icm & value_type == vt), select = -c(IC_meter, value_type))
-    col_counter <- col_counter + 1
-  }
+#Process sensors_df_mtrx to subset each source data frame into dataframes for each meter, 
+#and then replace the source data with the matrix of dataframe subsets
+for (row in 1:nrow(sensors_df_mtrx)) {
+  sensor_df <- sensors_df_mtrx[[row, 1]]
+  ic_meters <- unique(sensor_df$IC_meter)
+  value_types <- unique(sensor_df$value_type)
+  #The matrix will hold a dataframe subset for each IC_meter and value_type, with the name of each row being the IC_meter, and the column the value_type
+  meter_value_type_subsets_mtrx <- matrix(list(), nrow = length(ic_meters), ncol = length(value_types))
+  rownames(meter_value_type_subsets_mtrx) <- ic_meters
+  colnames(meter_value_type_subsets_mtrx) <- value_types
   col_counter <- 1
-  row_counter <- row_counter + 1
+  row_counter <- 1
+  for (icm in ic_meters) {
+    for (vt in value_types) {
+      meter_value_type_subsets_mtrx[[row_counter, col_counter]] <- subset(sensor_df, (IC_meter == icm & value_type == vt), select = -c(IC_meter, value_type))
+      col_counter <- col_counter + 1
+    }
+    col_counter <- 1
+    row_counter <- row_counter + 1
+  }
+  #Replace the original dataframe with the matrix of dataframe subsets
+  sensors_df_mtrx[[row, 1]] <- meter_value_type_subsets_mtrx
+  #Record the unique meter names and value_types
+  sensors_df_mtrx[[row, 2]] <- ic_meters
+  sensors_df_mtrx[[row, 3]] <- value_types
 }
 ```
 
 # Data Exploration
 
 ```{r plotly_lines, warning = FALSE}
-#This syntax for using plotly in a loop comes from here:
-#https://github.com/ropensci/plotly/issues/273
 line_plot_gatherer <- htmltools::tagList()
-col_counter <- 1
-row_counter <- 1
-plot_counter <- 1
-for (icm in ic_meters) {
-  for (vt in value_types) {
-    plot_df <- meter_value_type_subsets_mtrx[[row_counter, col_counter]]
-    if (nrow(plot_df) > 0) {
-      line_plot_gatherer[[plot_counter]] <- plot_ly(plot_df, x = ~time_stamp, y = ~value, type = "scatter", mode = "lines") %>% 
-        layout(title = paste("Meter -", icm, "- Value Type -", vt))
-      #Put some space between the plots
-      line_plot_gatherer[[plot_counter+1]] <- htmltools::h1(' ') 
-      col_counter <- col_counter + 1
-      plot_counter <- plot_counter + 2
-    }
-  }
+plot_counter <- 0
+for (row in 1:nrow(sensors_df_mtrx)) {
+  #Add the name of the source file
+  line_plot_gatherer[[(plot_counter <- plot_counter + 1)]] <- htmltools::h1(paste("Source file -", rownames(sensors_df_mtrx)[row])) 
+  meter_value_type_subsets_mtrx <- sensors_df_mtrx[[row, 1]]
+  ic_meters <- sensors_df_mtrx[[row, 2]]
+  value_types <- sensors_df_mtrx[[row, 3]]
   col_counter <- 1
-  row_counter <- row_counter + 1
+  row_counter <- 1
+  for (icm in ic_meters) {
+    for (vt in value_types) {
+      plot_df <- meter_value_type_subsets_mtrx[[row_counter, col_counter]]
+      if (nrow(plot_df) > 0) {
+        line_plot_gatherer[[(plot_counter <- plot_counter + 1)]] <- plot_ly(plot_df, x = ~time_stamp, y = ~value, type = "scatter", mode = "lines") %>% 
+          layout(title = paste("Meter -", icm, "- Value Type -", vt))
+        #Put some space between the plots
+        line_plot_gatherer[[(plot_counter <- plot_counter + 1)]] <- htmltools::h1("") 
+        col_counter <- col_counter + 1
+      }
+    }
+    col_counter <- 1
+    row_counter <- row_counter + 1
+  }
 }
 line_plot_gatherer
 ```
 
+# OpenTSDB Format
 
+This section writes data for import into [OpenTSDB](http://opentsdb.net), which could then be used with [Grafana](https://grafana.com/), for example.
+
+The data format, from [here](http://opentsdb.net/docs/build/html/user_guide/cli/import.html) is:
+
+```
+<metric> <timestamp> <value> <tagk=tagv> [<tagkN=tagvN>]
+```
+
+The data has to be made available on a file system that the OpenTSDB `import` command can see, and can then be imported like this:
+
+```
+import timeseries1.gz timeseries2.gz
+```
+
+```{r write_opentsdb_format}
+for (row in 1:nrow(sensors_df_mtrx)) {
+  meter_value_type_subsets_mtrx <- sensors_df_mtrx[[row, 1]]
+  ic_meters <- sensors_df_mtrx[[row, 2]]
+  value_types <- sensors_df_mtrx[[row, 3]]
+  col_counter <- 1
+  row_counter <- 1
+  for (icm in ic_meters) {
+    for (vt in value_types) {
+      export_df <- meter_value_type_subsets_mtrx[[row_counter, col_counter]]
+      
+    }
+  }
+  }
 ```
