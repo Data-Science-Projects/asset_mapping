@@ -107,8 +107,8 @@ for (row in 1:nrow(sensors_df_mtrx)) {
           layout(title = paste("Meter -", icm, "- Value Type -", vt))
         #Put some space between the plots
         line_plot_gatherer[[(plot_counter <- plot_counter + 1)]] <- htmltools::h1("") 
-        col_counter <- col_counter + 1
       }
+      col_counter <- col_counter + 1
     }
     col_counter <- 1
     row_counter <- row_counter + 1
@@ -130,10 +130,12 @@ The data format, from [here](http://opentsdb.net/docs/build/html/user_guide/cli/
 The data has to be made available on a file system that the OpenTSDB `import` command can see, and can then be imported like this:
 
 ```
-import timeseries1.gz timeseries2.gz
+for f in `ls *.tsdb`; do echo $f; sudo /usr/share/opentsdb/bin/tsdb import $f  --auto-metric=true; done
 ```
 
 ```{r write_opentsdb_format}
+invisible(file.remove(file.path("tsdb", list.files("tsdb"))))
+dir.create("tsdb", showWarnings = FALSE)
 for (row in 1:nrow(sensors_df_mtrx)) {
   meter_value_type_subsets_mtrx <- sensors_df_mtrx[[row, 1]]
   ic_meters <- sensors_df_mtrx[[row, 2]]
@@ -143,8 +145,44 @@ for (row in 1:nrow(sensors_df_mtrx)) {
   for (icm in ic_meters) {
     for (vt in value_types) {
       export_df <- meter_value_type_subsets_mtrx[[row_counter, col_counter]]
-      
+      if (nrow(export_df) == 0) {
+        next
+        }
+      #Remove spaces
+      icm <- gsub(" ", "_", icm)
+      vt <- gsub(" ", "_", vt)
+      #Convert parantheses to hyphens
+      icm <- gsub("\\(", "-", icm)
+      icm <- gsub("\\)", "-", icm)
+      #Add the meter and the value type as the metric column at the beginning of the dataframe to help ensure uniqueness
+      metric = paste(icm, vt, sep = ".")
+      if (metric == "London_7fb2bee9.NoiseAvg") {
+        View(export_df)
+      }
+      export_df <- cbind(comp_metric = metric, export_df)
+      #Add the meter as a tag at the end of the dataframe
+      export_df$tag <- paste("meter", icm, sep = "=")
+      #Change timestamp to milliseconds
+      export_df$time_stamp <- as.numeric(as.POSIXlt(export_df$time_stamp, tz='UTC')) * 1000
+      #Then restrict to 13 characters
+      export_df$time_stamp <- strtrim(as.character(export_df$time_stamp), 13)
+      #Turn off scientific formatting, in effect
+      options(scipen=500) 
+      #Make sure that all observations are unique
+      export_df <- unique(export_df)
+      #Order data in ascending order of time_stamp
+      export_df <- export_df[order(export_df$time_stamp),]
+      #Export data
+      export_file_name <- paste("tsdb/", icm, ".", vt, ".tsdb", sep = "")
+      #TODO use HTTP API to import data, though the batch import would probably be better for bulk data
+      write.table(export_df, file = export_file_name, sep = " ", quote = FALSE, row.names = FALSE, col.names = FALSE)
+      #Create a utility to delete the data that has been added, just so that it is easier to tidy up whilst testing
+      write.table(paste("sudo /usr/share/opentsdb/bin/tsdb scan 1970/01/01-00:00:00 sum", metric, "--delete") , file = "tsdb/delete_data.sh", append = TRUE, row.names = FALSE, col.names = FALSE, quote = FALSE)
+      system("chmod +x tsdb/delete_data.sh")
+      col_counter <- col_counter + 1
     }
+    col_counter <- 1
+    row_counter <- row_counter + 1
   }
-  }
+}
 ```
