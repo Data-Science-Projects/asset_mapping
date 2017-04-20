@@ -13,7 +13,21 @@ require("plotly")
 
 # Introduction
 
-This is a study of time series data provided by [Asset Mapping](https://www.assetmapping.com).
+This is a study of time series data provided by [Asset Mapping](https://www.assetmapping.com). The data is analysed below, and is revealed to be a series of readings of the following main attributes:
+
+ - CO2, in percentage of atmosphere.
+ - Temperature, in degrees centigrade.
+ - Humidity, in units that vary for different sensor.
+ - Noise average, in decibels.
+ - Noise peak in decibels.
+ - Battery voltage.
+ 
+## The Question
+
+One of the most important environmental measures is of CO2, so this study will focus on whether CO2 can be predicted from the other variables. In this, there are two main relationships that might hold:
+
+ - CO2 is predicted by Humidity and Temperature.
+ - CO2 is predicted by Humidity and Temperature, and indirectly by noise, where noise as a proxy for other activities that might increase CO2, such as air conditioning or people.
 
 # Data
 
@@ -52,6 +66,8 @@ for (file in data_files) {
   #Convert time_stamp string to POSIXct, note that the milliseconds are retained with the %OS format. To see milliseconds when printing, use:
   #op <- options(digits.secs=6) 
   sensors_df_mtrx[[row, 1]]$time_stamp <- as.POSIXct(sensors_df_mtrx[[row, 1]]$time_stamp, tz = "UTC", format = "%Y-%m-%d %H:%M:%OS", usetz = TRUE)
+  #Remove spaces from meter names
+  sensors_df_mtrx[[row, 1]]$IC_meter <- gsub(" ", "_", sensors_df_mtrx[[row, 1]]$IC_meter)
   row <- row + 1
 }
 ```
@@ -88,6 +104,23 @@ for (row in 1:nrow(sensors_df_mtrx)) {
 
 # Data Exploration
 
+In the data exploration below, it can be seen that different sensors report different value ranges for "Humidity". For example, "Water Sensor 2" has values as low as 5 and as high as 227, or more. The "Sensor 2", though, has values ranging from below 25 to nearly 65. These are possibly not the same units.
+
+Also, "Water Sensor 3" shows readings from almost 0 to above 50, but with only a few data points.
+
+These variations in data suggest that we need to ensure that we are careful to compare only like with like, from the same sensors.
+
+We can also see that, for a given sensor, that the available data do not all come from the same time range. Importantly, this means that just reviewing the plots of the original data visually will not easily reveal any relationships. We will need to normalise for consistent time ranges.
+
+Finally, we can see that, if we want to model for CO2 predicted by the other variables, we only have two sensor data sets that have readings for CO2, and Humdity, Temperature and Noise, so we need to restrict our modelling to data from those sensors, which are:
+
+ - London_70bf78cf, from 2_sensors_Dec_11_2016-Mar_26_2017.sql.gz.
+ - London_9c850e0a, from 2_sensors_Dec_11_2016-Mar_26_2017.sql.gz.
+ - London_70bf78cf, from 2_sensors_sensor_type_1.sql.gz.
+ - London_9c850e0a, from 2_sensors_sensor_type_1.sql.gz.
+ 
+Of these, the readings from 2_sensors_sensor_type_1.sql.gz seem to be the most complete. These are the observations we shall use as the basis for modelling, which is presented after the data analysis graphs below.
+
 ```{r plotly_lines, warning = FALSE}
 line_plot_gatherer <- htmltools::tagList()
 plot_counter <- 0
@@ -104,7 +137,7 @@ for (row in 1:nrow(sensors_df_mtrx)) {
       plot_df <- meter_value_type_subsets_mtrx[[row_counter, col_counter]]
       if (nrow(plot_df) > 0) {
         line_plot_gatherer[[(plot_counter <- plot_counter + 1)]] <- plot_ly(plot_df, x = ~time_stamp, y = ~value, type = "scatter", mode = "lines") %>% 
-          layout(title = paste("Meter -", icm, "- Value Type -", vt))
+          layout(title = paste("Sensor -", icm, "- Value Type -", vt))
         #Put some space between the plots
         line_plot_gatherer[[(plot_counter <- plot_counter + 1)]] <- htmltools::h1("") 
       }
@@ -115,6 +148,303 @@ for (row in 1:nrow(sensors_df_mtrx)) {
   }
 }
 line_plot_gatherer
+```
+
+# Modelling Analysis
+
+Based on the data analysis above. we are going to focus the modelling analysis on these portions of the data:
+
+ - London_70bf78cf, from 2_sensors_sensor_type_1.sql.gz.
+ - London_9c850e0a, from 2_sensors_sensor_type_1.sql.gz.
+ 
+The first step is to organise the data in a format such that we can associate readings, for the dependent variable, CO2, with readings for the, potential, explanatory variables of Temperature, Humidity and Noise Average, into a single observation. To do this, we need to choose readings for all variables that are within the same time period, and create observation sets from these.
+
+## Arranging Observations
+
+First we select the data subsets that we want to focus on:
+
+```{r subset_data_for_model}
+source_file <- "2_sensors_sensor_type_1.sql.gz"
+sensors <- c("London_70bf78cf", "London_9c850e0a")
+model_df_mtrx <- matrix(list(), nrow = length(sensors), 5)
+for (row in 1:nrow(sensors_df_mtrx)) {
+  #Select the specific source file
+  if (rownames(sensors_df_mtrx)[row] != source_file) {
+    next
+  }
+  meter_value_type_subsets_mtrx <- sensors_df_mtrx[[row, 1]]
+  ic_meters <- sensors_df_mtrx[[row, 2]]
+  value_types <- sensors_df_mtrx[[row, 3]]
+  col_counter <- 1
+  src_row_counter <- 1
+  dest_row_counter <- 1
+  row_names <- c()
+  col_names <- c()
+  for (icm in ic_meters) {
+    if (!(icm %in% sensors)) {
+      src_row_counter <- src_row_counter + 1
+      next
+    }            
+    row_names <- c(row_names, icm)
+    for (vt in value_types) {
+      model_df <- meter_value_type_subsets_mtrx[[src_row_counter, col_counter]]
+      if (nrow(model_df) > 0) {
+        #Sort the data by time_stamp as we store it
+        model_df_mtrx[[dest_row_counter, col_counter]] <- model_df[order(as.Date(model_df$time_stamp, format = "%Y-%m-%d %H:%M:%OS")),]
+        if(dest_row_counter == 1) {
+          col_names <- c(col_names, vt)
+        }
+      }
+      col_counter <- col_counter + 1
+    }
+    col_counter <- 1
+    src_row_counter <- src_row_counter + 1
+    dest_row_counter <- dest_row_counter + 1
+  }
+  rownames(model_df_mtrx) <- row_names
+  colnames(model_df_mtrx) <- col_names
+}
+```
+
+Next we need to find the data range for all observations that overlap.
+
+```{r date_range}
+sensors <- rownames(model_df_mtrx)
+value_types <- colnames(model_df_mtrx)
+for (row in 1:nrow(model_df_mtrx)) {
+  col_counter <- 1
+  row_counter <- 1
+  low_date <- as.POSIXct("0000-1-1 00:00:00", format = "%Y-%m-%d %H:%M:%OS")
+  #Should be good for a while
+  high_date <- as.POSIXct("9999-1-1 00:00:00", format = "%Y-%m-%d %H:%M:%OS")
+  for (sensor in sensors) {
+    for (vt in value_types) {
+      sensor_vt_df <- model_df_mtrx[[row_counter, col_counter]]
+      #The highest of the lowest dates will be the bottom of the common date range,
+      #and the lowest of the highest dates will be the top of the common date range.
+      #Note that the data is sorted by time_stamp.
+      if (low_date < as.POSIXct(sensor_vt_df[1, 1], format = "%Y-%m-%d %H:%M:%OS")) {
+        low_date <- as.POSIXct(sensor_vt_df[1, 1], format = "%Y-%m-%d %H:%M:%OS")
+      }
+      if (high_date > as.POSIXct(sensor_vt_df[nrow(sensor_vt_df), 1])) {
+        high_date <- as.POSIXct(sensor_vt_df[nrow(sensor_vt_df), 1], format = "%Y-%m-%d %H:%M:%OS")
+      }
+      col_counter <- col_counter + 1
+    }
+    col_counter <- 1
+    row_counter <- row_counter + 1
+  }
+}
+```
+
+Combine all of the data into a single data frame, between the date ranges.
+
+```{r combine_data}
+value_types <- colnames(model_df_mtrx)
+all_observations_df <- read.table(text="", col.names = value_types)   
+for (row in 1:nrow(model_df_mtrx)) {
+
+
+
+```
+
+Plot the subset of data on one graph to see if there are any obvious correlations, noting that the units are different for all reading types.
+
+```{r plotly_lines_correlations, warning = FALSE}
+for (row in 1:nrow(model_df_mtrx)) {
+  model_df_mtrx_row_counter <- 1
+  #Each column in the model_df_mtrx is a value type
+  model_df_mtrx_col_counter <- 1
+  #For each value type for a given sensor
+  for (vt in value_types) {
+    #Get the data frame for that value type
+    sensor_vt_df <- model_df_mtrx[[model_df_mtrx_row_counter, model_df_mtrx_col_counter]]
+    sensor_vt_df <- subset(sensor_vt_df, sensor_vt_df$time_stamp >= low_date & sensor_vt_df$time_stamp <= high_date)
+    plot <- plot_ly(sensor_vt_df, x = ~time_stamp)
+    
+    
+    
+    p <- plot_ly(data, x = ~x) %>%
+  add_trace(y = ~trace_0, name = 'trace 0',mode = 'lines') %>%
+  add_trace(y = ~trace_1, name = 'trace 1', mode = 'lines+markers') %>%
+  add_trace(y = ~trace_2, name = 'trace 2', mode = 'markers')
+    
+    
+  }
+}
+plot
+```
+
+Given the date range between `r low_date` and `r high_date` we can trim the data sets down as we reformat the data into observations. 
+
+What we need to do here is:
+
+ - Start from the `r low_date`, up to `r high_date`
+ - Put all observations for all value types into time `buckets` where the value of the reading for the time bucket is a mean of readings in that time bucket
+ - Gather all observations for the same time buckets into a single observation set for the given sensor/meter
+
+```{r trim_data_sets}
+#Create a set of time buckets, in minutes, into which we want to gather the data.
+#With a range of time buckets we can analyse the sensitivity of the predictive capability of the model for different time buckets, in minutes
+time_buckets <- c(1, 3, 5, 10, 20, 40, 60, 120, 180, 240) #Increase with buckets up to 60 min or more
+#Create a matrix to hold sets of observations for different time buckets
+all_observations_mtrx <- matrix(list(), nrow = length(time_buckets), ncol = 1)
+#This has been defined already, but doing so again here for readability.
+value_types <- colnames(model_df_mtrx)
+all_obs_row_counter <- 1
+
+for (time_bucket in time_buckets) {
+  start_time <- Sys.time()
+  #Create a data frame for all observations for all value types for a given time bucket
+  time_bucket_observations_df <- read.table(text="", col.names = value_types)    
+  time_bucket_secs = time_bucket * 60
+  #Each row in model_df_mtrx is a sensor
+  for (row in 1:nrow(model_df_mtrx)) {
+    model_df_mtrx_row_counter <- 1
+    #Each column in the model_df_mtrx is a value type
+    model_df_mtrx_col_counter <- 1
+    #For each value type for a given sensor
+    for (vt in value_types) {
+      #Get the data frame for that value type
+      sensor_vt_df <- model_df_mtrx[[model_df_mtrx_row_counter, model_df_mtrx_col_counter]]
+      #Subset dataframe to between the low_date and high_date
+      sensor_vt_df <- subset(sensor_vt_df, sensor_vt_df$time_stamp >= low_date & sensor_vt_df$time_stamp <= high_date)
+      #The counter for the mean values observation row, which is reset for each value type/column
+      obs_row_counter <- 1
+      #Set the bucket to start at the low date
+      bucket_start <- low_date
+      #Go through the data selecting observations that fit into the time bucket 
+      while (bucket_start + time_bucket_secs < high_date) {
+        #Subset to observations in time_bucket, note that the upper range is less than but not equal
+        time_bucket_vt_df <- subset(sensor_vt_df, sensor_vt_df$time_stamp >= bucket_start & sensor_vt_df$time_stamp < bucket_start + time_bucket_secs)
+        #Record the mean observation from the subset of observations in the time bucket, else record 0 if there are no observations
+        if (nrow(time_bucket_vt_df) > 0) {
+          time_bucket_observations_df[obs_row_counter, model_df_mtrx_col_counter] <- mean(time_bucket_vt_df$value)
+        } else {
+          time_bucket_observations_df[obs_row_counter, model_df_mtrx_col_counter] <- 0
+        }
+        obs_row_counter <- obs_row_counter + 1
+        #Increment the bucket by the amount of seconds
+        bucket_start <- bucket_start + time_bucket_secs
+      }
+      #Move on to the next column/value type
+      model_df_mtrx_col_counter <- model_df_mtrx_col_counter + 1
+    }
+    #Move on to the next row/sensor
+    model_df_mtrx_row_counter <- model_df_mtrx_row_counter + 1
+  }
+  all_observations_mtrx[[all_obs_row_counter, 1]] <- time_bucket_observations_df
+  all_obs_row_counter <- all_obs_row_counter + 1
+  print(paste("Time bucket of", time_bucket, "took", as.numeric(Sys.time()-start_time, units="secs"), "seconds, with", nrow(time_bucket_observations_df), "observations."))
+}
+```
+
+## Analysing Correlations
+
+Given the models gathered in `all_observations_mtrx` we can now look for correlations for which variables explain `CO2`. 
+
+```{r analyse_model_correlations}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ .), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
+```
+
+In general, the results show that CO2 is predicted by Humidity, Temperature and Noise.
+
+The results show that models for larger time buckets have a greater R-squared value.
+
+## Parsimonious Models
+
+Here we examine whether more parsimonious models are possible.
+
+```{r Temperature_model}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ Temperature), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
+```
+
+```{r Humidity_model}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ Humidity), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
+```
+
+```{r Temperature_Humidity_model}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ Humidity + Temperature), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
+```
+
+```{r NoiseAvg_model}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ NoiseAvg), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
+```
+
+```{r NoisePeak_model}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ NoisePeak), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
+```
+
+```{r Temperature_Humidity_NoiseAvg_model}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ Humidity + Temperature + NoiseAvg), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
+```
+
+```{r Temperature_Humidity_NoisePeak_model}
+#Loop through the data frames in all_observations_mtrx to examine possible correlations
+
+for (obs_row in 1:nrow(all_observations_mtrx)) {
+  print(paste("Model for time bucket of", time_buckets[obs_row], "minutes."))
+  allmodels <- step(lm(data = all_observations_mtrx[[obs_row, 1]], CO2 ~ Humidity + Temperature + NoisePeak), trace=0)
+  summary_all <- summary(allmodels)
+  print(summary_all)
+  print("--")
+}
 ```
 
 # OpenTSDB Format
