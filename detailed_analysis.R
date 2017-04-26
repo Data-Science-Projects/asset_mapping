@@ -1,7 +1,5 @@
 require("tidyr")
 require("dplyr")
-require("Rmpfr")
-
 
 #Tidy up environment first.
 rm(list = ls())
@@ -119,12 +117,6 @@ aggregate_time_periods <- function(wide_source_data, sensors, value_types, time_
         #If there are values for the sensor in the time period, bind a row of the means of the columns
         if (nrow(time_period_df) > 0) {
           values_col_means <- colMeans(time_period_df, na.rm = TRUE)
-          values_dplyr_means <- summarise_each(time_period_df, funs(mean(., na.rm = TRUE)))
-          if (all(values_col_means != values_dplyr_means)) {
-            print(paste("time_period -", time_period))
-            print(paste("values_col_means -", values_col_means))
-            print(paste("values_dplyr_means -", values_dplyr_means))
-          }
           means_df <- data.frame(sensor = sensor_name, t(values_col_means), stringsAsFactors = FALSE)
           time_period_observations_df <- rbind(time_period_observations_df, means_df, stringsAsFactors = FALSE)
           #if we have processed rows, then subtract them from the rows_not_included
